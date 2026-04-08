@@ -1,0 +1,18 @@
+Source code associated to the paper entitled "On securing online registration protocols: formal verification of a new proposal"
+By Jesus Diaz, David Arroyo and Francisco B. Rodriguez
+Tue Mar 13 09:32, 2012
+
+Contents:
+	* File "registration-ack.pv": Source code for ProVerif, in typed applied pi calculus, for the proposed protocol.
+	  Run with ProVerif with: "proverif registration-ack.pv"
+	* File "registration-ack-wo-ack.pv": Source code for ProVerif, in typed applied pi calculus, for the proposed
+	  protocol, weakened by removing the ACK message. Run with "proverif registration-ack-wo-ack.pv"
+	* File "registration-ack-wo-nonce.pv": Source code for ProVerif, in typed applied pi calculus, for the proposed
+	  protocol, weakened by removing the nonce sent jointly with the SSL ticket. Run with 
+	  "proverif registration-ack-wo-nonce.pv"
+	* File "registration-ack-wo-ticket.pv": Source code for ProVerif, in typed applied pi calculus, for the proposed
+	  protocol, weakened by removing the SSL ticket. Run with "proveif registration-ack-wo-ticket.pv"
+	* File "saw.pv": Source code for ProVerif, in typed applied pi calculus, for the protocol proposed in 
+	  "Simple Authentication for the Web". This code shows an attack on SAW, applicable also to the conventional
+	  EBIA. Run with "proverif saw.pv".
+	  

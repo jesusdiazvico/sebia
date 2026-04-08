@@ -1,0 +1,273 @@
+(************)
+(* Preamble *)
+(************)
+
+(** Data types **)
+type Host.
+type Key.
+type PubKey.
+type PrvKey.
+type Tag.
+type Ticket.
+type Id.
+type Password.
+type Nonce.
+type Email.
+
+(** Channels **)
+
+free net:channel. (* Public channel *)
+free privateSSLuserchannel:channel [private]. (* A private channel for SSL negotiations. *)
+free privateSSLwschannel:channel [private]. (* A private channel for SSL negotiations. *)
+free privateSSLmschannel:channel [private]. (* A private channel for SSL negotiations. *)
+
+(** Principals **)
+free ms,ws:Host. (* The servers names. *)
+
+(** Tables **)
+table emails(Email).
+table msaccounts(Email,Password).
+
+(** Message tags. **)
+free msg1,msg2,msg3,msg4,msg5,msg6,msg7,msg8,msg9:Tag.
+
+(** Constructors and destructors **)
+
+(* Public key related functions *)
+fun getpub(PrvKey):PubKey. (* Get public key associated to a private key *)
+
+fun pubenc(bitstring,PubKey):bitstring. (* Public key encryption *)
+reduc forall m:bitstring, pub:PubKey, prv:PrvKey; pubdec(pubenc(m,pub),prv) = m. (* Public key decryption *)
+
+fun sign(bitstring,PrvKey):bitstring. (* Signing *)
+reduc forall m:bitstring, prv:PrvKey; verify(sign(m,prv),getpub(prv),m) = true. (* Signature verification *)
+
+(* Symmetric encryption and decryption *)
+fun encrypt(bitstring,Key):bitstring. (* Encryption *)
+reduc forall m:bitstring, k:Key; decrypt(encrypt(m,k),k) = m. (* Decryption *)
+
+(* Hash functions *)
+fun hash(bitstring):bitstring.
+
+(** Events **)
+event UserRequestsRegistration(Email).
+event UserRequestsSendACK(Email,Ticket,Nonce).
+event UserReceivesId(Email,Id,Ticket).
+event MSSendsACK(Email,Nonce).
+event WSSendsTickets(Email,Ticket,Nonce).
+event WSProcessesACK(Email,Ticket,Nonce).
+event WSSendsId(Email,Id,Ticket).
+
+(** The queries. **)
+
+(* Secrecy *)
+
+(* The attacker does not gain knowledge of a freshly created ID *)
+query id:Id; attacker(new id).
+
+(* Authenticity *)
+
+(* Each time a user receives an ID, the WS has previously sent it. *)
+query e:Email, id:Id, ts:Ticket; 
+inj-event(UserReceivesId(e,id,ts)) ==> ( inj-event(WSSendsId(e,id,ts)) && inj-event(UserRequestsRegistration(e)) ).
+
+(* Each time the MS sends an ACK, the user has requested it *)
+query e:Email, ts:Ticket, n:Nonce;
+inj-event(WSProcessesACK(e,ts,n)) ==> (inj-event(MSSendsACK(e,n)) && inj-event(UserRequestsSendACK(e,ts,n))).
+
+(* Uncomment query to see that the attacker may request registration in stead of any user u. *)
+(* query e:Email, ts:Ticket, n:Nonce; 
+inj-event(WSSendsTickets(e,ts,n)) ==> inj-event(UserRequestsRegistration(e)). *)
+
+(***********************)
+(* The protocol itself *)
+(***********************)
+
+(** The user process. **)
+let userprocess =
+
+	new u:Host; out(net,u); (* The machine name *)
+	new e:Email; insert emails(e); out(net,e);
+	new pwd:Password; insert msaccounts(e,pwd);
+
+	(* Uncomment next line to model corrupt user or stolen email password *)
+	(*	out(net, pwd);	*)
+
+	(* Establish the first SSL session *)
+	new n1:Nonce;
+	out(privateSSLuserchannel, (u,ws,n1));
+	in(privateSSLuserchannel, (=ws,=u,=n1,kssluws1:Key));
+
+	(* Send the registration request *)
+	event UserRequestsRegistration(e);
+	out(net, encrypt((msg1, u, ws, e), kssluws1));
+
+	(* Receive via SSL the SSL ticket and the email nonce *)	
+	in(net, cmsg3:bitstring);
+	let (=msg3, =ws, =u, =e, ticketssl:Ticket, ne:Nonce) = decrypt(cmsg3,kssluws1) in
+
+	(* Fetch from the MS the email with the ticket sent by the WS *)
+
+	(* First: establish an SSL session with MS *)
+	new n2:Nonce;
+	out(privateSSLuserchannel, (u,ms,n2));
+	in(privateSSLuserchannel, (=ms,=u,=n2,ksslums1:Key));
+
+	(* Second: Authenticate and receive the email *)
+	out(net, encrypt((msg4,u,ms,e,pwd),ksslums1));
+	in(net, cmsg5:bitstring);
+
+	(* If the nonce received by email matches the one received
+	   via SSL, instruct the MS to send an ACK *)
+	let (=msg5, =ms, =u, =ne) = decrypt(cmsg5,ksslums1) in
+
+	event UserRequestsSendACK(e,ticketssl,ne);
+	out(net, encrypt((msg6,u,ms,e,ne,pwd),ksslums1));	
+
+	(* Send both tickets back to the WS in a new SSL session *)
+
+	new n3:Nonce;
+	out(privateSSLuserchannel, (u,ws,n3));
+	in(privateSSLuserchannel, (=ws,=u,=n3,kssluws2:Key));
+	
+	out(net, encrypt((msg8,u,ws,e,ticketssl),kssluws2));
+	in(net, cmsg9:bitstring);
+
+	let (=msg9,=ws,=u,=e,=ticketssl,id:Id) = decrypt(cmsg9,kssluws2) in
+	event UserReceivesId(e,id,ticketssl);
+
+	(* Uncomment the following line to test reachability *)
+	(*	out(net, id);	*)
+
+	0.
+	
+(** The ms process **)
+let msprocess(kmsprv:PrvKey, kwspub:PubKey) =
+
+	(* Receives an email *)
+	(* Note that it is not encrypted nor authenticated *)
+	in(net, (=msg2, =ws, =ms, e:Email, ne:Nonce));
+
+	(* Receives a SSL session *)
+	in(privateSSLmschannel, (u:Host,=ms,n2:Nonce,ksslums1:Key));
+
+	(* Receive authentication via the SSL session *)
+	in(net, cmsg4:bitstring);
+	let (=msg4,=u,=ms,=e,pwd:Password) = decrypt(cmsg4, ksslums1) in
+
+	(* Check the password *)
+	get msaccounts(=e,=pwd) in
+
+	(* Send email securely via SSL *)
+	(* Note that at this point, the user is authenticated to the MS *)
+	out(net, encrypt((msg5,ms,u,ne), ksslums1));
+
+	(* Wait for an instruction to send ACK *)
+	in(net, cmsg6:bitstring);	
+	let (=msg6,=u,=ms,=e,=ne,=pwd) = decrypt(cmsg6,ksslums1) in	
+
+	(* Send signed ACK to WS *)
+	event MSSendsACK(e,ne);
+	out(net, ((msg7,ms,ws,e,ne), sign((msg7,ms,ws,e,ne),kmsprv)));
+	0.
+	
+(** The ws process. **)
+let wsprocess(kwsprv:PrvKey, kmspub:PubKey) =
+
+	(* Receive a registration request *)
+	in(privateSSLwschannel, (u:Host, =ws, n1:Nonce, kssluws1:Key));
+
+	in(net, cmsg1:bitstring);
+	let (=msg1, =u, =ws, e:Email) = decrypt(cmsg1, kssluws1) in
+	
+	(* Check that we have received a valid user data (e.g. a supported
+	   email domain) *)
+	get emails(=e) in
+	
+	(* Create the email ticket and send, in cleartext, to the MS *)
+	new ne:Nonce;
+	out(net, (msg2, ws, ms, e, ne));
+
+	(* Create the SSL ticket and send it via the SSL session *)
+	new ticketssl:Ticket;
+	event WSSendsTickets(e,ticketssl,ne);
+	out(net, encrypt((msg3, ws, u, e, ticketssl, ne),kssluws1));
+	
+	(* Wait for the ACK from the MS *)
+	in(net, ((=msg7,=ms,=ws,=e,=ne), smsg7:bitstring));
+	
+	(* Check the signature *)
+	if verify(smsg7,kmspub,(msg7,ms,ws,e,ne)) = true then (	
+
+		event WSProcessesACK(e,ticketssl,ne);
+	
+		(* Wait for the tickets from u *)
+
+		(* Receive new SSL session *)
+		in(privateSSLwschannel, (=u, =ws, n3:Nonce, kssluws2:Key));
+		
+		in(net, cmsg8:bitstring);
+		let (=msg8, =u, =ws, =e, =ticketssl) = decrypt(cmsg8,kssluws2) in
+
+		(* Create and send the ID *)
+		new id:Id;
+		event WSSendsId(e,id,ticketssl);
+		out(net, encrypt((msg9,ws,u,e,ticketssl,id),kssluws2))
+
+	).		
+
+(** SSL negotiation process: used only between User and WS **)
+let sslkeynegotiation =
+
+	
+	in(privateSSLuserchannel, (u:Host,s:Host,n:Nonce));
+
+	if s = ws then (
+		new kssluws:Key;
+		out(privateSSLuserchannel, (ws,u,n,kssluws));
+		out(privateSSLwschannel, (u,ws,n,kssluws))
+
+	)
+
+	else (
+		if s = ms then (
+			new ksslums:Key;
+			out(privateSSLuserchannel, (ms,u,n,ksslums));
+			out(privateSSLmschannel, (u,ms,n,ksslums))
+		)
+	).
+	
+(** This process allows the attacker to establish SSL sessions with the ws and ms **)
+let sslbypass =
+
+	in(net, (h:Host,s:Host,n:Nonce));
+
+	if s = ws then (
+		new ksslhws:Key;
+		out(net, (ws,h,n,ksslhws));
+		out(privateSSLwschannel, (h,ws,n,ksslhws))
+	)
+
+	else (
+		if s = ms then (
+			new ksslhms:Key;
+			out(net, (ms,h,n,ksslhms));
+			out(privateSSLmschannel, (h,ms,n,ksslhms))
+		)
+	).
+
+(** The system. **) 
+process
+  
+	(* Create the WS's private key, and make public its public part: This will
+	   be used for modelling the authenticated channel. *)
+	new kwsprv:PrvKey; new kmsprv:PrvKey;
+	out(net, getpub(kwsprv)); out(net, getpub(kmsprv));
+
+	(* Launch all the processes *)
+	( (!userprocess)  (* Users *)
+    	  | (!wsprocess(kwsprv, getpub(kmsprv)))          (* Web Server *)
+	  | (!msprocess(kmsprv, getpub(kwsprv)))  	  (* Mail Server *)
+	  | (!sslkeynegotiation)          		  (* SSL negotiation *)
+	  | (!sslbypass)                  		  (* Allows the attacker to start SSL sessions *)
+	)	  	

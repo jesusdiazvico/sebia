@@ -1,0 +1,209 @@
+(************)
+(* Preamble *)
+(************)
+
+(** Data types **)
+type Host.
+type Email.
+type Key.
+type Tag.
+type Token.
+type Id.
+type Password.
+type Nonce.
+
+(** Channels **)
+
+free net:channel. (* Public channel *)
+free privateSSLuserchannel:channel [private]. (* A private channel for SSL negotiations. *)
+free privateSSLwschannel:channel [private]. (* A private channel for SSL negotiations. *)
+free privateSSLmschannel:channel [private]. (* A private channel for SSL negotiations. *)
+
+(** Principals **)
+free ms,ws:Host. (* The servers names. *)
+
+(** Tables **)
+table emails(Email).
+table msaccounts(Email,Password).
+
+(** Message tags. **)
+free msg1,msg2,msg3,msg4,msg5,msg6,msg7:Tag.
+
+(** Constructors and destructors **)
+
+(* Symmetric encryption and decryption *)
+fun encrypt(bitstring,Key):bitstring. (* Encryption *)
+reduc forall m:bitstring, k:Key; decrypt(encrypt(m,k),k) = m. (* Decryption *)
+
+(* Hash functions *)
+fun hash(bitstring):bitstring.
+
+(** The queries. **)
+
+(* Secrecy *)
+
+(* The attacker does not gain knowledge of a freshly created ID *)
+query id:Id; attacker(new id).
+
+(***********************)
+(* The protocol itself *)
+(***********************)
+
+(** The user process. **)
+let userprocess =
+
+	new u:Host; out(net,u);
+	new e:Email; insert emails(e); (* out(net,e); *)
+	new pwd:Password; insert msaccounts(e,pwd);
+
+	(* Uncomment next line to model corrupt user or stolen email password *)
+	(*	out(net, pwd);	*)
+
+	(* Establish the first SSL session *)
+	new n1:Nonce;
+	out(privateSSLuserchannel, (u,ws,n1));
+	in(privateSSLuserchannel, (=ws,=u,=n1,kssluws1:Key));
+
+	(* Send the registration request *)
+	out(net, encrypt((msg1, u, ws, e), kssluws1));
+
+	(* Receive via SSL the SSL ticket and the combination of
+	   SSL and email tickets *)	
+	in(net, cmsg3:bitstring);
+	let (=msg3, =ws, =u, authTokenUser:Token) = decrypt(cmsg3,kssluws1) in
+
+	(* Fetch from the MS the email with the ticket sent by the WS *)
+
+	(* First: establish an SSL session with MS *)
+	new n2:Nonce;
+	out(privateSSLuserchannel, (u,ms,n2));
+	in(privateSSLuserchannel, (=ms,=u,=n2,ksslums1:Key));
+
+	(* Second: Authenticate and receive the email *)
+	out(net, encrypt((msg4,u,ms,e,hash((e,pwd))),ksslums1));	
+
+	in(net, cmsg5:bitstring);
+	let (=msg5, =ms, =u, authTokenEmail:Token) = decrypt(cmsg5,ksslums1) in
+
+	(* Send both tickets back to the WS in a new SSL session *)
+
+	new n3:Nonce;
+	out(privateSSLuserchannel, (u,ws,n3));
+	in(privateSSLuserchannel, (=ws,=u,=n3,kssluws2:Key));
+	
+	out(net, encrypt((msg6,u,ws,authTokenEmail,authTokenUser),kssluws2));
+	in(net, cmsg7:bitstring);
+
+	let (=msg7,=ws,=u,id:Id) = decrypt(cmsg7,kssluws2) in
+
+	(* Uncomment the following line to test reachability *)
+	(*	out(net, id);	*)
+	0.
+	
+(** The ms process **)
+let msprocess =
+
+	(* Receives an email *)
+	in(net, (=msg2, =ws, =ms, e:Email, authTokenEmail:Token));
+
+	(* Receives a SSL session *)
+	in(privateSSLmschannel, (u:Host,=ms, n2:Nonce, ksslums1:Key));
+
+	(* Receive authentication via the SSL session *)
+	in(net, cmsg4:bitstring);
+	let (=msg4,=u,=ms,=e,hpwd:bitstring) = decrypt(cmsg4, ksslums1) in
+
+	(* Check the password *)
+	get msaccounts(=e,pwd:Password) in
+
+	if hpwd = hash((e,pwd)) then (
+
+		(* Send email securely via SSL *)
+		(* Note that at this point, the user is authenticated to the MS *)
+		out(net, encrypt((msg5,ms,u,authTokenEmail), ksslums1))
+
+	).
+	
+(** The ws process. **)
+let wsprocess =
+
+	(* Receive a registration request *)
+	in(privateSSLwschannel, (u:Host, =ws, n1:Nonce, kssluws1:Key));
+
+	in(net, cmsg1:bitstring);
+	let (=msg1, =u, =ws, e:Email) = decrypt(cmsg1, kssluws1) in
+	
+	(* Check that we have received a valid email *)
+	get emails(=e) in
+	
+	(* Create authTokenEmail and send it via email (i.e., to the MS) *)
+	new authTokenEmail:Token;
+	out(net, (msg2, ws, ms, e, authTokenEmail));
+
+	(* Create authTokenUser and send it via SSL *)
+	new authTokenUser:Token;
+	out(net, encrypt((msg3, ws, u, authTokenUser),kssluws1));
+
+	(* Wait until getting the tokens back from the user *)
+
+	(* Receive new SSL session *)
+	in(privateSSLwschannel, (=u, =ws, n3:Nonce, kssluws2:Key));
+		
+	in(net, cmsg8:bitstring);
+	let (=msg6, =u, =ws, =authTokenEmail, =authTokenUser) = decrypt(cmsg8,kssluws2) in
+
+	(* Create and send the ID *)
+	new id:Id;
+	out(net, encrypt((msg7,ws,u,id),kssluws2)).
+
+(** SSL negotiation process: used only between User and WS **)
+let sslkeynegotiation =
+
+	
+	in(privateSSLuserchannel, (u:Host,s:Host,n:Nonce));
+
+	if s = ws then (
+
+		new kssluws:Key;
+		out(privateSSLuserchannel, (ws,u,n,kssluws));
+		out(privateSSLwschannel, (u,ws,n,kssluws))
+
+	)
+
+	else (
+		if s = ms then (
+			new ksslums:Key;
+			out(privateSSLuserchannel, (ms,u,n,ksslums));
+			out(privateSSLmschannel, (u,ms,n,ksslums))
+		)
+	).
+	
+(** This process allows the attacker to establish SSL sessions with the ws and ms **)
+let sslbypass =
+
+	in(net, (h:Host,s:Host,n:Nonce));
+
+	if s = ws then (
+		new ksslhws:Key;
+		out(net, (ws,h,n,ksslhws));
+		out(privateSSLwschannel, (h,ws,n,ksslhws))
+	)
+
+	else (
+		if s = ms then (
+			new ksslhms:Key;
+			out(net, (ms,h,n,ksslhms));
+			out(privateSSLmschannel, (h,ms,n,ksslhms))
+		)
+	).
+
+(** The system. **) 
+process
+  
+	(* Launch all the processes *)
+	( (!userprocess)  (* Users *)
+    	  | (!wsprocess)          (* Web Server *)
+	  | (!msprocess)  	  (* Mail Server *)
+	  | (!sslkeynegotiation)          		  (* SSL negotiation *)
+	  | (!sslbypass)                  		  (* Allows the attacker to start SSL sessions *)
+	)	  	

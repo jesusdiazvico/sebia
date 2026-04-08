@@ -1,4 +1,4 @@
-# Secure Registration Protocol (EBIA Extension)
+# Secure Registration Protocol (Secure EBIA / SEBIA)
 
 This repository contains the materials related to a research work on securing online registration protocols based on Email-Based Identification and Authentication (EBIA).
 
